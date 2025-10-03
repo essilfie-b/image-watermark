@@ -1,0 +1,188 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: AWS Serverless Spring Boot 2 API - org.images::image-upload
+
+Parameters:
+  Stage:
+    Type: String
+    Default: dev
+    Description: Stage name for the deployment
+
+Globals:
+  Function:
+    Runtime: java21
+    MemorySize: 2048
+    Timeout: 30
+
+Resources:
+  UserPool:
+    Type: AWS::Cognito::UserPool
+    Properties:
+      UserPoolName: !Sub "${AWS::StackName}-user-pool"
+      Policies:
+        PasswordPolicy:
+          MinimumLength: 8
+          RequireUppercase: true
+          RequireLowercase: true
+          RequireNumbers: true
+          RequireSymbols: false
+      AutoVerifiedAttributes:
+        - email
+      UsernameAttributes:
+        - email
+      Schema:
+        - Name: email
+          AttributeDataType: String
+          Required: true
+          Mutable: true
+        - Name: name
+          AttributeDataType: String
+          Required: true
+          Mutable: true
+
+  UserPoolClient:
+    Type: AWS::Cognito::UserPoolClient
+    Properties:
+      UserPoolId: !Ref UserPool
+      ClientName: !Sub "${AWS::StackName}-client"
+      GenerateSecret: false
+      ExplicitAuthFlows:
+        - ALLOW_ADMIN_USER_PASSWORD_AUTH
+        - ALLOW_USER_PASSWORD_AUTH
+        - ALLOW_REFRESH_TOKEN_AUTH
+      TokenValidityUnits:
+        AccessToken: hours
+        IdToken: hours
+        RefreshToken: days
+      AccessTokenValidity: 1
+      IdTokenValidity: 1
+      RefreshTokenValidity: 30
+
+  ImageProcessingQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub "${Stage}-image-processing-queue"
+      VisibilityTimeout: 300
+      MessageRetentionPeriod: 1209600
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt ImageProcessingDLQ.Arn
+        maxReceiveCount: 2
+
+  ImageProcessingDLQ:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub "${Stage}-image-processing-dlq"
+      MessageRetentionPeriod: 1209600
+
+  ImageProcessingQueuePolicy:
+    Type: AWS::SQS::QueuePolicy
+    Properties:
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: AllowS3ToSendMessage
+            Effect: Allow
+            Principal:
+              Service: s3.amazonaws.com
+            Action:
+              - sqs:SendMessage
+            Resource: !GetAtt ImageProcessingQueue.Arn
+            Condition:
+              ArnEquals:
+                aws:SourceArn: !Sub "arn:aws:s3:::${Stage}-photoblog-staging-${AWS::AccountId}-${AWS::Region}"
+              StringEquals:
+                aws:SourceAccount: !Ref AWS::AccountId
+      Queues:
+        - !Ref ImageProcessingQueue
+
+  ProcessedImageBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub "${Stage}-photoblog-processed-${AWS::AccountId}-${AWS::Region}"
+      VersioningConfiguration:
+        Status: Enabled
+
+  StagingImageBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub "${Stage}-photoblog-staging-${AWS::AccountId}-${AWS::Region}"
+      LifecycleConfiguration:
+        Rules:
+          - Id: DeleteAfter1Day
+            Status: Enabled
+            ExpirationInDays: 1
+      NotificationConfiguration:
+        QueueConfigurations:
+          - Event: "s3:ObjectCreated:*"
+            Queue: !GetAtt ImageProcessingQueue.Arn
+
+  ApiGateway:
+    Type: AWS::Serverless::Api
+    Properties:
+      Name: !Sub "${AWS::StackName}-api"
+      StageName: !Ref Stage
+      BinaryMediaTypes:
+        - "multipart/form-data"
+        - "image/*"
+        - "application/octet-stream"
+      Cors:
+        AllowMethods: "'GET,POST,PUT,DELETE,OPTIONS'"
+        AllowHeaders: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token'"
+        AllowOrigin: "'http://localhost:5173'"
+
+  ImageUploadFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: org.images.StreamLambdaHandler::handleRequest
+      CodeUri: image-upload/target/image-upload-1.0-SNAPSHOT-lambda-package.zip
+      Policies: AWSLambdaBasicExecutionRole
+      SnapStart:
+        ApplyOn: PublishedVersions
+      AutoPublishAlias: live
+      Events:
+        ProxyResource:
+          Type: Api
+          Properties:
+            RestApiId: !Ref ApiGateway
+            Path: /upload/{proxy+}
+            Method: any
+
+  AuthServiceFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: org.images.StreamLambdaHandler::handleRequest
+      CodeUri: auth-service/target/auth-service-1.0-SNAPSHOT-lambda-package.zip
+      Policies: AWSLambdaBasicExecutionRole
+      SnapStart:
+        ApplyOn: PublishedVersions
+      AutoPublishAlias: live
+      Events:
+        ProxyResource:
+          Type: Api
+          Properties:
+            RestApiId: !Ref ApiGateway
+            Path: /auth/{proxy+}
+            Method: any
+
+  ImageWatermarkFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: org.images.StreamLambdaHandler::handleRequest
+      CodeUri: image-watermark/target/image-watermark-1.0-SNAPSHOT-lambda-package.zip
+      Policies: AWSLambdaBasicExecutionRole
+      SnapStart:
+        ApplyOn: PublishedVersions
+      AutoPublishAlias: live
+      Events:
+        ProxyResource:
+          Type: Api
+          Properties:
+            Path: /watermark/{proxy+}
+            Method: any
+
+Outputs:
+  ImageUploadApi:
+    Description: URL for application
+    Value: !Sub "https://${ApiGateway}.execute-api.${AWS::Region}.amazonaws.com/${Stage}"
+    Export:
+      Name: ImageUploadApi
