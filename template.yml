@@ -144,7 +144,7 @@ Resources:
           Type: Api
           Properties:
             RestApiId: !Ref ApiGateway
-            Path: /upload/{proxy+}
+            Path: /images/{proxy+}
             Method: any
 
   AuthServiceFunction:
@@ -152,10 +152,25 @@ Resources:
     Properties:
       Handler: org.images.StreamLambdaHandler::handleRequest
       CodeUri: auth-service/target/auth-service-1.0-SNAPSHOT-lambda-package.zip
-      Policies: AWSLambdaBasicExecutionRole
+      Policies:
+        - AWSLambdaBasicExecutionRole
+        - Version: '2012-10-17'
+          Statement:
+            - Effect: Allow
+              Action:
+                - cognito-idp:AdminCreateUser
+                - cognito-idp:AdminSetUserPassword
+                - cognito-idp:AdminGetUser
+                - cognito-idp:AdminInitiateAuth
+              Resource: !GetAtt UserPool.Arn
       SnapStart:
         ApplyOn: PublishedVersions
       AutoPublishAlias: live
+      Environment:
+        Variables:
+          COGNITO_USER_POOL_ID: !Ref UserPool
+          COGNITO_CLIENT_ID: !Ref UserPoolClient
+          REGION: !Ref AWS::Region
       Events:
         ProxyResource:
           Type: Api
