@@ -1,10 +1,11 @@
-package org.images.services;
+package org.images.services.impl;
 
 import lombok.AllArgsConstructor;
 import org.images.config.CognitoConfig;
-import org.images.dtos.LoginRequest;
-import org.images.dtos.RegisterUserRequest;
-import org.images.dtos.RegisterUserResponse;
+import org.images.dtos.*;
+import org.images.exceptions.InvalidOperationException;
+import org.images.services.AuthService;
+import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import software.amazon.awssdk.services.cognitoidentityprovider.CognitoIdentityProviderClient;
 import software.amazon.awssdk.services.cognitoidentityprovider.model.*;
@@ -51,9 +52,10 @@ public class AuthServiceImpl implements AuthService {
 
     @Override
     public RegisterUserResponse createUser(RegisterUserRequest request) {
-        var createUserRequest = AdminCreateUserRequest.builder()
-                .userPoolId(cognitoConfig.getUserPoolId())
+        var signUpRequest = SignUpRequest.builder()
+                .clientId(cognitoConfig.getClientId())
                 .username(request.email())
+                .password(request.password())
                 .userAttributes(
                         AttributeType.builder()
                                 .name("email")
@@ -62,28 +64,43 @@ public class AuthServiceImpl implements AuthService {
                         AttributeType.builder()
                                 .name("name")
                                 .value(request.name())
-                                .build(),
-                        AttributeType.builder()
-                                .name("email_verified")
-                                .value("true")
                                 .build()
                 )
-                .temporaryPassword(request.password())
-                .messageAction(MessageActionType.SUPPRESS)
                 .build();
 
-        var createResponse = cognitoClient.adminCreateUser(createUserRequest);
-        String userId = createResponse.user().username();
+        cognitoClient.signUp(signUpRequest);
+        return new RegisterUserResponse(
+                "User created successfully. Please check your email for verification code."
+        );
+    }
 
-        var setPasswordRequest = AdminSetUserPasswordRequest.builder()
-                .userPoolId(cognitoConfig.getUserPoolId())
-                .username(userId)
-                .password(request.password())
-                .permanent(true)
+    @Override
+    public VerificationResponse confirmEmail(ConfirmEmailRequest request) {
+        try {
+            var confirmRequest = ConfirmSignUpRequest.builder()
+                    .clientId(cognitoConfig.getClientId())
+                    .username(request.email())
+                    .confirmationCode(request.code())
+                    .build();
+
+            cognitoClient.confirmSignUp(confirmRequest);
+            return new VerificationResponse("Email verified successfully. You can now login");
+        } catch (CodeMismatchException e) {
+            throw new InvalidOperationException("Invalid verification code", HttpStatus.BAD_REQUEST);
+        } catch (ExpiredCodeException e) {
+            throw new InvalidOperationException("Verification code has expired", HttpStatus.BAD_REQUEST);
+        }
+    }
+
+    @Override
+    public VerificationResponse resendConfirmationCode(String email) {
+        var resendRequest = ResendConfirmationCodeRequest.builder()
+                .clientId(cognitoConfig.getClientId())
+                .username(email)
                 .build();
 
-        cognitoClient.adminSetUserPassword(setPasswordRequest);
+        cognitoClient.resendConfirmationCode(resendRequest);
 
-        return new RegisterUserResponse("User created successfully");
+        return new VerificationResponse("Verification code sent to your email.");
     }
 }

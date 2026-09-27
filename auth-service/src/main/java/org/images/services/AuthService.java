@@ -1,8 +1,6 @@
 package org.images.services;
 
-import org.images.dtos.LoginRequest;
-import org.images.dtos.RegisterUserRequest;
-import org.images.dtos.RegisterUserResponse;
+import org.images.dtos.*;
 import software.amazon.awssdk.services.cognitoidentityprovider.model.AuthenticationResultType;
 
 public interface AuthService {
@@ -13,4 +11,7 @@ public interface AuthService {
 
     RegisterUserResponse createUser(RegisterUserRequest request);
 
+    VerificationResponse confirmEmail(ConfirmEmailRequest request);
+
+    VerificationResponse resendConfirmationCode(String email);
 }

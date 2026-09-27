@@ -1,3 +1,17 @@
+server:
+  servlet:
+    context-path: /auth
+
+springdoc:
+  api-docs:
+    path: /v3/api-docs  # Remove /auth prefix - it's added by context-path
+    enabled: true
+  swagger-ui:
+    path: /swagger-ui.html  # Remove /auth prefix
+    enabled: true
+    config-url: /v3/api-docs/swagger-config
+    url: /v3/api-docs
+
 aws:
   cognito:
     user-pool-id: ${COGNITO_USER_POOL_ID}

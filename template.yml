@@ -15,6 +15,58 @@ Globals:
     Timeout: 30
 
 Resources:
+  PostConfirmationFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: org.images.PostConfirmationHandler::handleRequest
+      CodeUri: post-signup
+      MemorySize: 1024
+      Timeout: 15
+      Policies:
+        - AWSLambdaBasicExecutionRole
+        - Version: '2012-10-17'
+          Statement:
+            - Effect: Allow
+              Action:
+                - dynamodb:PutItem
+              Resource: !GetAtt UsersTable.Arn
+      SnapStart:
+        ApplyOn: PublishedVersions
+      AutoPublishAlias: live
+      Environment:
+        Variables:
+          USERS_TABLE_NAME: !Ref UsersTable
+          REGION: !Ref AWS::Region
+
+  PostConfirmationPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref PostConfirmationFunction
+      Principal: cognito-idp.amazonaws.com
+      Action: lambda:InvokeFunction
+      SourceArn: !GetAtt UserPool.Arn
+
+  UsersTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub "${Stage}-users"
+      AttributeDefinitions:
+        - AttributeName: userId
+          AttributeType: S
+        - AttributeName: email
+          AttributeType: S
+      KeySchema:
+        - AttributeName: userId
+          KeyType: HASH
+      GlobalSecondaryIndexes:
+        - IndexName: email-index
+          KeySchema:
+            - AttributeName: email
+              KeyType: HASH
+          Projection:
+            ProjectionType: ALL
+      BillingMode: PAY_PER_REQUEST
+
   UserPool:
     Type: AWS::Cognito::UserPool
     Properties:
@@ -39,6 +91,8 @@ Resources:
           AttributeDataType: String
           Required: true
           Mutable: true
+      LambdaConfig:
+        PostConfirmation: !GetAtt PostConfirmationFunction.Arn
 
   UserPoolClient:
     Type: AWS::Cognito::UserPoolClient
@@ -50,6 +104,7 @@ Resources:
         - ALLOW_ADMIN_USER_PASSWORD_AUTH
         - ALLOW_USER_PASSWORD_AUTH
         - ALLOW_REFRESH_TOKEN_AUTH
+        - ALLOW_USER_SRP_AUTH
       TokenValidityUnits:
         AccessToken: hours
         IdToken: hours
@@ -57,6 +112,7 @@ Resources:
       AccessTokenValidity: 1
       IdTokenValidity: 1
       RefreshTokenValidity: 30
+      PreventUserExistenceErrors: ENABLED
 
   ImageProcessingQueue:
     Type: AWS::SQS::Queue
@@ -125,10 +181,7 @@ Resources:
         - "multipart/form-data"
         - "image/*"
         - "application/octet-stream"
-      Cors:
-        AllowMethods: "'GET,POST,PUT,DELETE,OPTIONS'"
-        AllowHeaders: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token'"
-        AllowOrigin: "'http://localhost:5173'"
+        - "*/*"
 
   ImageUploadFunction:
     Type: AWS::Serverless::Function
@@ -158,11 +211,20 @@ Resources:
           Statement:
             - Effect: Allow
               Action:
-                - cognito-idp:AdminCreateUser
-                - cognito-idp:AdminSetUserPassword
+                - cognito-idp:SignUp
+                - cognito-idp:ConfirmSignUp
+                - cognito-idp:ResendConfirmationCode
                 - cognito-idp:AdminGetUser
                 - cognito-idp:AdminInitiateAuth
               Resource: !GetAtt UserPool.Arn
+            - Effect: Allow
+              Action:
+                - dynamodb:PutItem
+                - dynamodb:GetItem
+                - dynamodb:Query
+              Resource:
+                - !GetAtt UsersTable.Arn
+                - !Sub "${UsersTable.Arn}/index/*"
       SnapStart:
         ApplyOn: PublishedVersions
       AutoPublishAlias: live
@@ -171,6 +233,7 @@ Resources:
           COGNITO_USER_POOL_ID: !Ref UserPool
           COGNITO_CLIENT_ID: !Ref UserPoolClient
           REGION: !Ref AWS::Region
+          USERS_TABLE_NAME: !Ref UsersTable
       Events:
         ProxyResource:
           Type: Api
